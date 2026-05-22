@@ -9,15 +9,16 @@ Layout:
   - Main page    : whichever menu item was tapped.
 
 Key points:
-  - DARK theme (black background, light text) applied with CSS only
-    (no JavaScript, so the dropdown problem cannot come back).
-  - Wood Type / Payment Status / Payment Mode are now TAP-TO-SELECT
-    buttons (st.radio), not dropdowns -> there is no list to pop up,
-    flicker, or reopen. Only Party Name stays a searchable dropdown
-    because you type to find a customer.
+  - LIGHT theme (white background, black text) applied with CSS only
+    (no JavaScript - the dropdown problem cannot come back).
+  - Wood Type / Payment Status / Payment Mode are TAP-TO-SELECT buttons
+    (st.radio), not dropdowns. Only Party Name stays a searchable
+    dropdown because you type to find a customer.
   - No Storage Location field.
   - First row: Wood Type, Party Name, Vehicle No, Date.
   - Compact layout designed to fit without scrolling.
+  - 🖨️ Print Bill button generates a clean PDF (needs fpdf2 -
+    `pip install fpdf2`).
   - Grand Total = (Total Weight kg / 1000) x Rate per ton - Weighment Fee
 """
 
@@ -33,6 +34,12 @@ try:
 except Exception:
     HAVE_PLOTLY = False
 
+try:
+    from fpdf import FPDF
+    HAVE_PDF = True
+except Exception:
+    HAVE_PDF = False
+
 from database import (
     init_db, verify_user,
     add_customer, get_customer_names,
@@ -46,49 +53,51 @@ init_db()
 
 
 # ======================================================================
-# DARK THEME  (pure CSS - no script, safe for the dropdown)
+# LIGHT THEME  (pure CSS - no script, safe for the dropdown)
 # ======================================================================
 def apply_dark_theme():
     st.markdown(
         """
         <style>
         .stApp, [data-testid="stAppViewContainer"],
-        [data-testid="stHeader"] { background-color: #000000; }
-        section[data-testid="stSidebar"] { background-color: #0c0c0c; }
+        [data-testid="stHeader"] { background-color: #ffffff; }
+        section[data-testid="stSidebar"] { background-color: #f5f5f5; }
         .stApp, .stApp p, .stApp span, .stApp label, .stApp div,
         h1, h2, h3, h4, h5, h6, .stMarkdown, .stCaption {
-            color: #e8e8e8 !important;
+            color: #111111 !important;
         }
         /* tighten vertical spacing so everything fits one page */
         .block-container { padding-top: 1.2rem; padding-bottom: 1rem; }
         [data-testid="stVerticalBlock"] { gap: 0.55rem; }
-        hr { margin: 0.5rem 0; }
+        hr { margin: 0.5rem 0; border-color: #dddddd; }
         /* text / number inputs */
         input, textarea,
         .stTextInput input, .stNumberInput input, .stDateInput input {
-            background-color: #1c1c1c !important;
-            color: #f5f5f5 !important;
-            border: 1px solid #3a3a3a !important;
+            background-color: #ffffff !important;
+            color: #111111 !important;
+            border: 1px solid #cccccc !important;
         }
-        /* the only remaining dropdown (Party Name): keep it readable */
+        /* the only remaining dropdown (Party Name): readable on white */
         [data-baseweb="select"] > div {
-            background-color: #1c1c1c !important;
-            color: #f5f5f5 !important;
-            border: 1px solid #3a3a3a !important;
+            background-color: #ffffff !important;
+            color: #111111 !important;
+            border: 1px solid #cccccc !important;
         }
         [data-baseweb="popover"], [role="listbox"] {
-            background-color: #1c1c1c !important;
-            color: #f5f5f5 !important;
+            background-color: #ffffff !important;
+            color: #111111 !important;
+            border: 1px solid #cccccc !important;
         }
-        [role="option"] { color: #f5f5f5 !important; }
-        [data-testid="stMetricValue"] { color: #ffffff !important; }
-        [data-testid="stMetricLabel"] { color: #b8b8b8 !important; }
-        /* tap-to-select buttons (radio) look like chips */
+        [role="option"] { color: #111111 !important; }
+        [data-testid="stMetricValue"] { color: #000000 !important; }
+        [data-testid="stMetricLabel"] { color: #555555 !important; }
+        /* tap-to-select chips */
         div[role="radiogroup"] label {
-            background: #1c1c1c; border: 1px solid #3a3a3a;
+            background: #ffffff; border: 1px solid #cccccc;
+            color: #111111;
             padding: 4px 12px; border-radius: 6px; margin: 2px 4px 2px 0;
         }
-        .stDataFrame, [data-testid="stDataFrame"] { background-color:#111; }
+        .stDataFrame, [data-testid="stDataFrame"] { background-color:#ffffff; }
         /* Watermark - visible on every page, sits above content but does
            not block clicks. */
         #mr-watermark {
@@ -97,8 +106,8 @@ def apply_dark_theme():
             bottom: 10px;
             font-size: 12px;
             font-style: italic;
-            color: #888;
-            opacity: 0.75;
+            color: #555;
+            opacity: 0.7;
             letter-spacing: 0.3px;
             pointer-events: none;
             z-index: 9999;
@@ -220,9 +229,10 @@ def run_deep_analysis(from_date, to_date):
 
 
 def _style_dark(fig):
-    fig.update_layout(template="plotly_dark",
+    fig.update_layout(template="plotly_white",
                       paper_bgcolor="rgba(0,0,0,0)",
                       plot_bgcolor="rgba(0,0,0,0)",
+                      font=dict(color="#111111"),
                       height=360, margin=dict(l=0, r=0, t=10, b=0))
     return fig
 
@@ -410,6 +420,80 @@ def sidebar():
 
 
 # ======================================================================
+# PDF BILL BUILDER  (used by the 🖨️ Print Bill button)
+# ======================================================================
+def build_bill_pdf(party, wood, vehicle, bill_date, status, mode,
+                   rows_df, weighment_fee, grand_total):
+    """Return the bill as PDF bytes. Requires fpdf2."""
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+
+    # Title
+    pdf.set_font("Helvetica", "B", 16)
+    pdf.cell(0, 10, "Wood Billing - Receipt", ln=True, align="C")
+    pdf.ln(2)
+
+    # Header info (two columns)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(95, 7, f"Date: {bill_date}", ln=0)
+    pdf.cell(95, 7, f"Vehicle: {vehicle or '-'}", ln=1)
+    pdf.cell(95, 7, f"Party: {party or '-'}", ln=0)
+    pdf.cell(95, 7, f"Wood Type: {wood or '-'}", ln=1)
+    pdf.cell(0, 7, f"Payment: {status} ({mode})", ln=1)
+    pdf.ln(3)
+
+    # Items table header
+    pdf.set_font("Helvetica", "B", 10)
+    pdf.cell(35, 8, "Initial (kg)", border=1, align="C")
+    pdf.cell(35, 8, "Empty (kg)", border=1, align="C")
+    pdf.cell(35, 8, "Total (kg)", border=1, align="C")
+    pdf.cell(40, 8, "Rate (per ton)", border=1, align="C")
+    pdf.cell(45, 8, "Row Value (Rs)", border=1, align="C", ln=1)
+
+    # Items rows
+    pdf.set_font("Helvetica", "", 10)
+    total_w = 0.0
+    total_v = 0.0
+    for _, r in rows_df.iterrows():
+        if r["Initial Weight"] <= 0:
+            continue
+        pdf.cell(35, 7, f"{r['Initial Weight']:.2f}", border=1, align="R")
+        pdf.cell(35, 7, f"{r['Empty Weight']:.2f}", border=1, align="R")
+        pdf.cell(35, 7, f"{r['Total Weight']:.2f}", border=1, align="R")
+        pdf.cell(40, 7, f"{r['Rate']:.2f}", border=1, align="R")
+        pdf.cell(45, 7, f"Rs {r['Row Value']:,.2f}", border=1,
+                 align="R", ln=1)
+        total_w += float(r["Total Weight"])
+        total_v += float(r["Row Value"])
+
+    pdf.ln(4)
+
+    # Totals block
+    pdf.set_font("Helvetica", "", 11)
+    pdf.cell(150, 7, "Total Weight:", align="R")
+    pdf.cell(40, 7, f"{total_w:,.2f} kg", ln=1, align="R")
+    pdf.cell(150, 7, "Weight x Rate:", align="R")
+    pdf.cell(40, 7, f"Rs {total_v:,.2f}", ln=1, align="R")
+    pdf.cell(150, 7, "Weighment Fee:", align="R")
+    pdf.cell(40, 7, f"- Rs {weighment_fee:,.2f}", ln=1, align="R")
+    pdf.ln(1)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.cell(150, 9, "GRAND TOTAL:", align="R")
+    pdf.cell(40, 9, f"Rs {grand_total:,.2f}", ln=1, align="R")
+
+    pdf.ln(10)
+    pdf.set_font("Helvetica", "I", 9)
+    pdf.cell(0, 5, "Powered by Monisa_raja", ln=1, align="R")
+
+    # fpdf2 returns bytearray; older fpdf returned str. Handle both.
+    out = pdf.output(dest="S")
+    if isinstance(out, str):
+        out = out.encode("latin-1", errors="replace")
+    return bytes(out)
+
+
+# ======================================================================
 # MAIN PAGE: ANALYSIS
 # ======================================================================
 def analysis_page():
@@ -591,6 +675,35 @@ def billing_interface():
         st.subheader(f"🧾 Grand Total: ₹ {grand_total:,.2f}")
         save_clicked = st.button("💾 Save Bill", type="primary",
                                  use_container_width=True)
+        # ---- Print Bill: build a PDF from the current form state ----
+        if HAVE_PDF and used_rows > 0:
+            try:
+                import re
+                pdf_bytes = build_bill_pdf(
+                    party_name if party_name != "-- select --" else "",
+                    wood_type, vehicle_number, bill_date,
+                    payment_status, payment_mode,
+                    df, weighment_fee, grand_total,
+                )
+                party_safe = re.sub(
+                    r"[^A-Za-z0-9_-]", "_",
+                    party_name if party_name != "-- select --" else "draft",
+                ) or "draft"
+                st.download_button(
+                    "🖨️ Print Bill (PDF)",
+                    data=pdf_bytes,
+                    file_name=f"bill_{party_safe}_{bill_date}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True,
+                    help="Downloads a printable PDF. Open it and use "
+                         "your usual Print to print or save.",
+                )
+            except Exception as e:
+                st.caption(f"PDF unavailable: {e}")
+        elif not HAVE_PDF:
+            st.caption("To enable Print: `pip install fpdf2` and restart.")
+        else:
+            st.caption("Add at least one weight row to enable Print.")
 
     if save_clicked:
         if party_name == "-- select --":
